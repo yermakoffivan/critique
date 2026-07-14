@@ -2364,6 +2364,7 @@ cli
 
 cli
   .command("review [base] [head]", "AI-powered diff review")
+  .hidden()
   .option("--agent <name>", "AI agent to use (default: opencode)")
   .option("--model <id>", "Model to use for review (e.g., anthropic/claude-sonnet-4-20250514 for opencode, claude-sonnet-4-20250514 for claude)")
   .option("--staged", "Review staged changes")

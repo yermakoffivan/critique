@@ -174,49 +174,6 @@ curl -s "$CRITIQUE_URL.patch" | git apply
 curl -s "$CRITIQUE_URL.patch" | git apply --reverse
 ```
 
-## AI-Powered Diff Explanation
-
-`critique review` asks an agent to explain a diff in a readable order. It can use [OpenCode](https://opencode.ai) or [Claude Code](https://www.anthropic.com/claude-code).
-
-```bash
-# Review unstaged changes with OpenCode
-critique review
-
-# Use Claude Code instead
-critique review --agent claude
-
-# Review staged changes
-critique review --staged
-
-# Review changes since a ref
-critique review HEAD~1
-critique review main
-
-# Review one commit
-critique review --commit HEAD~1
-
-# Include coding session context
-critique review --agent opencode --session <session-id>
-critique review --agent claude --session <session-id>
-
-# Upload the review as a web preview
-critique review --web
-critique review --web --open
-```
-
-### Review Options
-
-| Flag | Description |
-| --- | --- |
-| `--agent <name>` | AI agent to use: `opencode` or `claude` |
-| `--staged` | Review staged changes |
-| `--commit <ref>` | Review one commit |
-| `--session <id>` | Include session context, can be repeated |
-| `--web` | Upload the review as a web preview |
-| `--pdf [filename]` | Generate a PDF. See the [e-reader guide](docs/e-reader-guide.md) |
-| `--open` | Open the generated URL or PDF |
-| `--filter <pattern>` | Filter files by glob |
-
 ## Git Difftool Integration
 
 Configure critique as your git difftool:
@@ -286,12 +243,11 @@ The ID comes from the unified diff `@@` header, so it stays stable across runs.
 
 ## E-Ink Reading
 
-Generate PDFs from diffs and AI reviews to read on Kindle or Boox e-readers.
+Generate PDFs from diffs to read on Kindle or Boox e-readers.
 
 ```bash
 critique --pdf
-critique review --pdf
-critique review main --pdf --open
+critique main --pdf --open
 ```
 
 The PDF preserves syntax highlighting and diff formatting. Email it to your Kindle, drop it in BooxDrop, or save it to a synced Google Drive folder. See [docs/e-reader-guide.md](docs/e-reader-guide.md) for setup details.

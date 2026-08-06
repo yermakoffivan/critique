@@ -77,11 +77,13 @@ critique --filter "src/**/*.ts" --filter "lib/**/*.js"
 
 | Key | Action |
 | --- | --- |
-| `←` / `→` | Navigate between files |
 | `↑` / `↓` | Scroll up and down |
-| `Ctrl+P` | Open file selector dropdown |
+| `p` | Open file selector dropdown |
+| `t` | Open theme picker |
 | `Option` held | Fast scroll at 10x speed |
-| `Esc` | Close dropdown |
+| `g` `g` / `G` | Jump to top / bottom |
+| `Ctrl+D` / `Ctrl+U` | Half page down / up |
+| `q` / `Esc` | Quit / close overlay |
 
 ## Web Previews
 

@@ -68,9 +68,39 @@ critique main feature-branch
 # Watch the working tree and refresh on changes
 critique --watch
 
+# Add experimental call-stack changes to the file tree
+critique --calldiff
+
 # Filter files by glob pattern
 critique --filter "src/**/*.ts"
 critique --filter "src/**/*.ts" --filter "lib/**/*.js"
+```
+
+## Call-stack Diffs
+
+`--calldiff` uses [calldiff](https://github.com/tanishqkancharla/calldiff) to show how function calls changed. Each changed call tree appears below its source file in the top file tree.
+
+```bash
+# Working tree call changes
+critique --calldiff
+
+# Changes since a ref
+critique main --calldiff
+
+# PR-style comparison and web preview
+critique main HEAD --calldiff --web "Call flow changes"
+
+# One commit
+critique --commit HEAD --calldiff
+```
+
+The feature is experimental. calldiff uses Tree-sitter and can install a language grammar through npm on first use. `--staged`, `--stdin`, and `--watch` are not supported with `--calldiff`.
+
+Set `CRITIQUE_CALLDIFF=1` to enable call-stack diffs by default:
+
+```bash
+export CRITIQUE_CALLDIFF=1
+critique
 ```
 
 ## Navigation
@@ -120,6 +150,7 @@ Generated URLs look like `critique.work/v/<id>`.
 | `--web [title]` | Generate and upload a web preview | `Critique Diff` |
 | `--staged` | Show staged changes | none |
 | `--commit <ref>` | Show changes from a specific commit | none |
+| `--calldiff` | Add experimental call-stack changes to the file tree | off |
 | `--cols <n>` | Desktop render width | `240` |
 | `--mobile-cols <n>` | Mobile render width | `100` |
 | `--filter <pattern>` | Filter files by glob, can be repeated | none |

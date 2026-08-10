@@ -62,6 +62,7 @@ import {
   type GitCommandOptions,
 } from "./diff-utils.js";
 import type { TreeFileInfo } from "./directory-tree.js";
+import { createCallDiff, type CallDiffByFile } from "./calldiff.js";
 import packageJson from "../package.json" assert { type: "json" };
 
 
@@ -1113,6 +1114,7 @@ interface WebModeOptions {
   mobileCols?: number;
   theme?: string;
   json?: boolean;
+  callDiffByFile?: CallDiffByFile;
 }
 
 async function runWebMode(
@@ -1152,7 +1154,15 @@ async function runWebMode(
     // after the URL is printed, so the user sees the URL faster.
     const { htmlDesktop, htmlMobile, ogImage } = await captureResponsiveHtml(
       diffContent,
-      { desktopCols, mobileCols, baseRows, themeName, title: options.title, skipOgImage: true }
+      {
+        desktopCols,
+        mobileCols,
+        baseRows,
+        themeName,
+        title: options.title,
+        skipOgImage: true,
+        callDiffByFile: options.callDiffByFile,
+      }
     );
 
     log("Uploading...");
@@ -1189,6 +1199,7 @@ async function runWebMode(
         const ogImg = await renderDiffToOgImage(diffContent, {
           themeName: "github-light",
           stabilizeMs: 2000,
+          callDiffByFile: options.callDiffByFile,
         });
         if (ogImg) {
           await uploadOgImage(result.id, ogImg);
@@ -1222,6 +1233,7 @@ interface PdfModeOptions {
   cols?: number;
   /** Page size preset or custom WxH in points (default: "a4-landscape") */
   pageSize?: string;
+  callDiffByFile?: CallDiffByFile;
 }
 
 /** Standard page size presets in points [width, height] */
@@ -1284,6 +1296,7 @@ async function runPdfMode(
       maxRows: 10000,
       themeName,
       viewMode: pageWidth > pageHeight ? "split" : undefined,
+      callDiffByFile: options.callDiffByFile,
     });
 
     // Resolve theme colors
@@ -1324,6 +1337,7 @@ async function runPdfMode(
 interface ImageModeOptions {
   theme?: string;
   cols?: number;
+  callDiffByFile?: CallDiffByFile;
 }
 
 async function runImageMode(
@@ -1344,6 +1358,7 @@ async function runImageMode(
     const result = await renderDiffToImages(diffContent, {
       cols,
       themeName,
+      callDiffByFile: options.callDiffByFile,
     });
 
     console.log(`\nGenerated ${result.imageCount} image${result.imageCount === 1 ? "" : "s"}:`);
@@ -1363,6 +1378,7 @@ async function runImageMode(
 interface ScrollbackModeOptions {
   cols?: number;
   theme?: string;
+  callDiffByFile?: CallDiffByFile;
 }
 
 async function runScrollbackMode(
@@ -1384,6 +1400,7 @@ async function runScrollbackMode(
       cols,
       maxRows: 10000,
       themeName,
+      callDiffByFile: options.callDiffByFile,
     });
 
     const theme = getResolvedTheme(themeName);
@@ -1504,9 +1521,10 @@ class ScrollAcceleration {
 
 export interface AppProps {
   parsedFiles: ParsedFile[];
+  callDiffByFile?: CallDiffByFile;
 }
 
-export function App({ parsedFiles }: AppProps): React.ReactElement {
+export function App({ parsedFiles, callDiffByFile }: AppProps): React.ReactElement {
   const { width: initialWidth } = useTerminalDimensions();
   const [width, setWidth] = React.useState(initialWidth);
   const [scrollAcceleration] = React.useState(() => new ScrollAcceleration());
@@ -1645,6 +1663,7 @@ export function App({ parsedFiles }: AppProps): React.ReactElement {
       additions,
       deletions,
       fileIndex: idx,
+      callDiffs: callDiffByFile?.[getFileName(file)],
     };
   });
 
@@ -2045,6 +2064,7 @@ cli
   .option("--staged", "Show staged changes")
   .option("--commit <ref>", "Show changes from a specific commit")
   .option("--watch", "Watch for file changes and refresh diff")
+  .option("--calldiff", "Show experimental call-stack changes in the file tree")
   .option("--context <lines>", "Number of context lines (default: 6)")
   .option("--filter <pattern>", wrapJsonSchema<string[]>({
     type: "array",
@@ -2063,6 +2083,12 @@ cli
   .option("--stdin", "Read diff from stdin (for use as a pager)")
   .option("--scrollback", "Output to terminal scrollback instead of TUI (auto-enabled when non-TTY)")
   .action(async (base, head, options) => {
+    const callDiffEnabled = options.calldiff || process.env.CRITIQUE_CALLDIFF === "1";
+    if (callDiffEnabled && (options.staged || options.stdin || options.watch)) {
+      console.error("--calldiff does not support --staged, --stdin, or --watch")
+      process.exit(1)
+    }
+
     // Ensure we're inside a git repository before doing anything
     if (!options.stdin) {
       ensureGitRepo();
@@ -2139,6 +2165,30 @@ cli
     // Clean submodule headers once
     const cleanedDiff = stripSubmoduleHeaders(diffContent);
 
+    let callDiffByFile: CallDiffByFile | undefined;
+    if (callDiffEnabled && cleanedDiff.trim()) {
+      const { parsePatch } = await import("diff");
+      const callDiffFiles = parseGitDiffFiles(cleanedDiff, parsePatch).map((file) => ({
+        path: getFileName(file),
+        oldPath: getOldFileName(file),
+      }));
+      console.error("Analyzing call stacks...");
+      try {
+        const commitRange = options.commit?.includes("..") ? options.commit : undefined;
+        callDiffByFile = await createCallDiff({
+          cwd: process.cwd(),
+          base: commitRange ?? base,
+          head,
+          commit: commitRange ? undefined : options.commit,
+          files: callDiffFiles,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Failed to analyze call stacks: ${message}`);
+        process.exit(1);
+      }
+    }
+
     // Check for empty diff (except for --watch mode which may get content later)
     const shouldWatch = options.watch && !base && !head && !options.commit && !options.stdin;
     if (!cleanedDiff.trim() && !shouldWatch) {
@@ -2161,6 +2211,7 @@ cli
         cols: parseInt(options.cols) || 240,
         mobileCols: parseInt(options.mobileCols) || 100,
         theme: options.theme,
+        callDiffByFile,
       });
       return;
     }
@@ -2173,6 +2224,7 @@ cli
         theme: options.theme,
         cols: parseInt(options.cols) || undefined,
         pageSize: options.pdfPageSize,
+        callDiffByFile,
       });
       return;
     }
@@ -2181,6 +2233,7 @@ cli
       await runImageMode(cleanedDiff, {
         theme: options.theme,
         cols: parseInt(options.cols) || 120,
+        callDiffByFile,
       });
       return;
     }
@@ -2191,6 +2244,7 @@ cli
       await runScrollbackMode(cleanedDiff, {
         theme: options.theme,
         cols: scrollbackCols,
+        callDiffByFile,
       });
       return;
     }
@@ -2347,7 +2401,7 @@ cli
           );
         }
 
-        return <App parsedFiles={parsedFiles} />;
+        return <App parsedFiles={parsedFiles} callDiffByFile={callDiffByFile} />;
       }
 
       createRoot(renderer).render(

@@ -61,23 +61,42 @@ const TreeNodeLine: React.FC<TreeNodeLineProps> = ({
     const hasAdditions = (node.additions ?? 0) > 0
     const hasDeletions = (node.deletions ?? 0) > 0
 
+    const callDiffPrefix = node.prefix + (node.connector.startsWith("├") ? "│   " : "    ")
+
     return (
-      <box
-        style={{
-          flexDirection: "row",
-          backgroundColor: isHovered ? rgbaToHex(theme.backgroundPanel) : undefined,
-        }}
-        onMouseMove={() => setIsHovered(true)}
-        onMouseOut={() => setIsHovered(false)}
-        // onMouseDown={onSelect} // disabled: conflicts with copy selection
-      >
-        <text fg={mutedColor}>{node.prefix}{node.connector}</text>
-        <text fg={pathColor}>{node.displayPath}</text>
-        <text fg={mutedColor}> (</text>
-        {hasAdditions && <text fg={addColor}>+{node.additions}</text>}
-        {hasAdditions && hasDeletions && <text fg={mutedColor}>,</text>}
-        {hasDeletions && <text fg={delColor}>-{node.deletions}</text>}
-        <text fg={mutedColor}>)</text>
+      <box style={{ flexDirection: "column" }}>
+        <box
+          style={{
+            flexDirection: "row",
+            backgroundColor: isHovered ? rgbaToHex(theme.backgroundPanel) : undefined,
+          }}
+          onMouseMove={() => setIsHovered(true)}
+          onMouseOut={() => setIsHovered(false)}
+          // onMouseDown={onSelect} // disabled: conflicts with copy selection
+        >
+          <text fg={mutedColor}>{node.prefix}{node.connector}</text>
+          <text fg={pathColor}>{node.displayPath}</text>
+          <text fg={mutedColor}> (</text>
+          {hasAdditions && <text fg={addColor}>+{node.additions}</text>}
+          {hasAdditions && hasDeletions && <text fg={mutedColor}>,</text>}
+          {hasDeletions && <text fg={delColor}>-{node.deletions}</text>}
+          <text fg={mutedColor}>)</text>
+        </box>
+        {node.callDiffs?.flatMap((tree, treeIndex) =>
+          tree.ascii.split("\n").map((line, lineIndex) => {
+            const color = line.startsWith("+")
+              ? addColor
+              : line.startsWith("-")
+                ? delColor
+                : textColor
+            return (
+              <box key={`${treeIndex}-${lineIndex}`} style={{ flexDirection: "row" }}>
+                <text fg={mutedColor}>{callDiffPrefix}</text>
+                <text fg={color}>{line}</text>
+              </box>
+            )
+          }),
+        )}
       </box>
     )
   }

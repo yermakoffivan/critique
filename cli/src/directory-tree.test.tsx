@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "bun:test"
 import { testRender } from "@opentuah/react/test-utils"
 import { buildDirectoryTree, type TreeFileInfo, type TreeNode } from "./directory-tree.js"
 import { DirectoryTreeView } from "./components/directory-tree-view.js"
+import type { CallDiffTree } from "./calldiff.js"
 
 /**
  * Simple component to render tree nodes as text for testing
@@ -361,6 +362,60 @@ describe("DirectoryTreeView component", () => {
                                               
                                               
       "
+    `)
+  })
+
+  it("renders call-stack diffs below their files", async () => {
+    const callDiffs: CallDiffTree[] = [
+      {
+        entry: "createAgentSession",
+        ascii: [
+          "  createAgentSession()",
+          "- ├─ createAuth()",
+          "- ├─ createCodingTools()",
+          "+ └─ getServices()",
+        ].join("\n"),
+      },
+    ]
+    const files: TreeFileInfo[] = [
+      {
+        path: "src/session.ts",
+        status: "modified",
+        additions: 2,
+        deletions: 3,
+        fileIndex: 0,
+        callDiffs,
+      },
+      {
+        path: "src/services.ts",
+        status: "modified",
+        additions: 1,
+        deletions: 0,
+        fileIndex: 1,
+      },
+    ]
+
+    testSetup = await testRender(
+      <DirectoryTreeView files={files} themeName="github" />,
+      { width: 80, height: 14 },
+    )
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+
+    await testSetup.renderOnce()
+    const frame = testSetup.captureCharFrame()
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .join("\n")
+      .trimEnd()
+    expect(`\n${frame}`).toMatchInlineSnapshot(`
+      "
+                              └── src
+                                  ├── services.ts (+1)
+                                  └── session.ts (+2,-3)
+                                        createAgentSession()
+                                      - ├─ createAuth()
+                                      - ├─ createCodingTools()
+                                      + └─ getServices()"
     `)
   })
 })

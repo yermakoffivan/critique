@@ -43,6 +43,7 @@
     "wrangler": "^4.19.1"
   },
   "dependencies": {
+    "@xmorse/calldiff": "0.4.2",
     "@agentclientprotocol/sdk": "^0.13.1",
     "@clack/prompts": "1.0.0-alpha.9",
     "@opentuah/core": "0.1.97",

@@ -13,6 +13,7 @@ import type { BoxRenderable, CapturedFrame, CapturedLine, RootRenderable, CliRen
 import { DiffRenderable } from "@opentuah/core"
 import type { IndexedHunk, ReviewYaml } from "./review/types.js"
 import { loadStoredLicenseKey, loadOrCreateOwnerSecret } from "./license.js"
+import type { CallDiffByFile } from "./calldiff.js"
 
 const execAsync = promisify(exec)
 
@@ -33,6 +34,8 @@ export interface CaptureOptions {
   /** How long to wait for async rendering (tree-sitter) to stabilize.
    *  Default: 500ms for interactive TUI, use 100ms for batch/web mode. */
   stabilizeMs?: number
+  /** Optional call-stack changes to render below files in the top tree */
+  callDiffByFile?: CallDiffByFile
 }
 
 export interface UploadResult {
@@ -234,6 +237,7 @@ async function renderDiffToFrameWithSectionPositions(
       additions,
       deletions,
       fileIndex: idx,
+      callDiffs: options.callDiffByFile?.[getFileName(file)],
     }
   })
   const treeFileOrder = buildDirectoryTree(treeFiles)
@@ -678,6 +682,8 @@ export async function captureResponsiveHtml(
     stabilizeMs?: number
     /** Skip OG image generation for faster URL delivery */
     skipOgImage?: boolean
+    /** Optional call-stack changes to render below files in the top tree */
+    callDiffByFile?: CallDiffByFile
   }
 ): Promise<{ htmlDesktop: string; htmlMobile: string; ogImage: Buffer | null }> {
   // Max row values - content-fitting will grow to actual content size
@@ -698,6 +704,7 @@ export async function captureResponsiveHtml(
             // Always use github-light for OG images (no dark mode support in OG protocol)
             themeName: "github-light",
             stabilizeMs,
+            callDiffByFile: options.callDiffByFile,
           })
         } catch {
           return null
@@ -711,6 +718,7 @@ export async function captureResponsiveHtml(
       themeName: options.themeName,
       title: options.title,
       stabilizeMs,
+      callDiffByFile: options.callDiffByFile,
     }),
     captureToHtml(diffContent, {
       cols: options.mobileCols,
@@ -718,6 +726,7 @@ export async function captureResponsiveHtml(
       themeName: options.themeName,
       title: options.title,
       stabilizeMs,
+      callDiffByFile: options.callDiffByFile,
     }),
     ogImagePromise,
   ])

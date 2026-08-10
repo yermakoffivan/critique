@@ -15,6 +15,7 @@ import {
   type ImageTheme,
   type FrameLayout,
 } from "./opentui-image.js"
+import type { CallDiffByFile } from "./calldiff.js"
 
 // Re-export types from opentui-image for convenience
 export type { ImageTheme, FrameLayout }
@@ -164,6 +165,7 @@ export async function renderDiffToImages(
     cols?: number
     maxRows?: number
     themeName?: string
+    callDiffByFile?: CallDiffByFile
   } & RenderToImagesOptions = {}
 ): Promise<RenderResult> {
   const { renderDiffToFrame } = await import("./web-utils.js")
@@ -177,6 +179,7 @@ export async function renderDiffToImages(
     cols,
     maxRows,
     themeName,
+    callDiffByFile: options.callDiffByFile,
   })
 
   // Convert frame to images
@@ -319,7 +322,11 @@ export async function renderFrameToOgImage(
  */
 export async function renderDiffToOgImage(
   diffContent: string,
-  options: OgImageOptions & { cols?: number; stabilizeMs?: number } = {}
+  options: OgImageOptions & {
+    cols?: number
+    stabilizeMs?: number
+    callDiffByFile?: CallDiffByFile
+  } = {}
 ): Promise<Buffer> {
   const { renderDiffToFrame } = await import("./web-utils.js")
 
@@ -340,6 +347,7 @@ export async function renderDiffToOgImage(
     maxRows: 200,
     themeName,
     stabilizeMs: options.stabilizeMs,
+    callDiffByFile: options.callDiffByFile,
   })
 
   // Convert frame to OG image

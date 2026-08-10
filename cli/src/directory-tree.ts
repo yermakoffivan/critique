@@ -2,6 +2,8 @@
 // Builds a collapsible tree from file paths with status colors and change counts.
 // Returns structured nodes that can be rendered by DirectoryTreeView component.
 
+import type { CallDiffTree } from "./calldiff.js"
+
 /**
  * File status based on git diff
  */
@@ -17,6 +19,8 @@ export interface TreeFileInfo {
   deletions: number
   /** Optional index for scroll-to functionality */
   fileIndex?: number
+  /** Changed call trees rooted in this file */
+  callDiffs?: CallDiffTree[]
 }
 
 /**
@@ -35,6 +39,8 @@ export interface TreeNode {
   additions?: number
   /** Number of deleted lines (only for files) */
   deletions?: number
+  /** Changed call trees rooted in this file */
+  callDiffs?: CallDiffTree[]
   /** Tree connector character: "├── " or "└── " */
   connector: string
   /** Prefix string for tree lines, e.g., "│   " */
@@ -48,6 +54,7 @@ interface InternalTreeNode {
   status?: FileStatus
   additions?: number
   deletions?: number
+  callDiffs?: CallDiffTree[]
   children: InternalTreeNode[]
 }
 
@@ -99,6 +106,7 @@ function buildInternalTree(files: TreeFileInfo[]): InternalTreeNode[] {
         node.status = file.status
         node.additions = file.additions
         node.deletions = file.deletions
+        node.callDiffs = file.callDiffs
       }
 
       currentLevel = node.children
@@ -189,6 +197,7 @@ function flattenTree(tree: InternalTreeNode[]): TreeNode[] {
       status: collapsed.originalNode.status,
       additions: collapsed.originalNode.additions,
       deletions: collapsed.originalNode.deletions,
+      callDiffs: collapsed.originalNode.callDiffs,
       connector,
       prefix,
     })

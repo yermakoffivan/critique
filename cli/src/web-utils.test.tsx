@@ -105,6 +105,49 @@ new file mode 100644
     // (may have some empty lines for layout/spacing)
     expect(frame.rows).toBeGreaterThanOrEqual(contentLines.length)
   })
+
+  test("renders call-stack changes in the static file tree", async () => {
+    const { renderDiffToFrame } = await import("./web-utils.js")
+    const diffContent = `diff --git test.ts test.ts
+--- test.ts
++++ test.ts
+@@ -1 +1 @@
+-export function start() { oldService() }
++export function start() { newService() }
+`
+
+    const frame = await renderDiffToFrame(diffContent, {
+      cols: 80,
+      maxRows: 30,
+      themeName: "github",
+      callDiffByFile: {
+        "test.ts": [
+          {
+            entry: "start",
+            ascii: [
+              "  start()",
+              "- ├─ oldService()",
+              "+ └─ newService()",
+            ].join("\n"),
+          },
+        ],
+      },
+    })
+    const content = frame.lines
+      .map((line) => line.spans.map((span) => span.text).join("").trimEnd())
+      .filter(Boolean)
+      .join("\n")
+
+    expect(content).toMatchInlineSnapshot(`
+      "                              └── test.ts (+1,-1)
+                                          start()
+                                        - ├─ oldService()
+                                        + └─ newService()
+       test.ts +1-1
+       1 - export function start() { oldService() }
+       1 + export function start() { newService() }"
+    `)
+  })
 })
 
 // Helper to create a mock CapturedSpan (transparent fg/bg → no inline styles)

@@ -2,7 +2,7 @@
 // Translates critique's Git comparisons and groups calldiff entry trees by displayed file.
 
 import child_process from "child_process"
-import type { DiffTreeResult } from "@xmorse/calldiff"
+import { renderDiff, type DiffNode, type DiffTreeResult } from "calldiff"
 
 export interface CallDiffTree {
   entry: string
@@ -91,6 +91,27 @@ function normalizePath(filePath: string): string {
   return filePath.replace(/^\.\//, "")
 }
 
+function filterAddedChildren(nodes: DiffNode[]): DiffNode[] {
+  return nodes.flatMap((node) => {
+    if (node.status === "removed") return []
+
+    const children = filterAddedChildren(node.children)
+    if (node.kind === "branch") return children
+    if (node.status === "same" && children.length === 0) return []
+
+    return [{ ...node, children }]
+  })
+}
+
+function filterAddedCalls(node: DiffNode): DiffNode | undefined {
+  if (node.status === "removed") return undefined
+
+  const children = filterAddedChildren(node.children)
+  if (node.status === "same" && children.length === 0) return undefined
+
+  return { ...node, children }
+}
+
 function groupTreesByFile(
   trees: DiffTreeResult[],
   files: CallDiffFile[],
@@ -106,11 +127,12 @@ function groupTreesByFile(
 
   const callDiffByFile: CallDiffByFile = {}
   for (const result of trees) {
-    if (!result.tree.file) continue
-    const displayedPath = displayedPathBySourcePath.get(normalizePath(result.tree.file))
+    const tree = filterAddedCalls(result.tree)
+    if (!tree?.file) continue
+    const displayedPath = displayedPathBySourcePath.get(normalizePath(tree.file))
     if (!displayedPath) continue
     const fileTrees = callDiffByFile[displayedPath] ?? []
-    fileTrees.push({ entry: result.entry, ascii: result.ascii })
+    fileTrees.push({ entry: result.entry, ascii: renderDiff(tree, { color: false, locs: false }) })
     callDiffByFile[displayedPath] = fileTrees
   }
   return callDiffByFile
@@ -128,12 +150,12 @@ export async function createCallDiff(
       file.oldPath ? [file.path, file.oldPath] : [file.path],
     )),
   ]
-  const { runDiff } = await import("@xmorse/calldiff")
+  const { runDiff } = await import("calldiff")
   const result = runDiff({
     cwd,
     ...refs,
     paths,
-    maxDepth: 6,
+    maxDepth: 1,
     color: false,
     locs: false,
   })

@@ -106,7 +106,7 @@ function createDeepCallRepo(): string {
 
   writeSource({ repoPath, filePath: "src/flow.ts", source: dedent`
 
-    export function start() { level1() }
+    export function start() { if (ready) level1() }
 
     ${helpers}
 
@@ -129,7 +129,7 @@ describe("createCallDiff", () => {
     fs.rmSync(TEMP_ROOT, { recursive: true, force: true })
   })
 
-  test("groups the example call-stack changes under their source files", async () => {
+  test("groups added calls under their source files", async () => {
     const repoPath = createExampleRepo()
     const callDiff = await createCallDiff({
       cwd: repoPath,
@@ -143,19 +143,12 @@ describe("createCallDiff", () => {
       "src/session.ts
 
         createAgentSession()
-      - ├─ createAuth()
-      - ├─ createCodingTools()
       + └─ getServices()
-      +    ├─ createAuth()
-      +    ├─ createSettings()
-      +    └─ createCodingTools()
 
       src/services.ts
 
         getServices()
-        ├─ createAuth()
-      + ├─ createSettings()
-        └─ createCodingTools()"
+      + └─ createSettings()"
     `)
   })
 
@@ -179,23 +172,16 @@ describe("createCallDiff", () => {
       "src/session.ts
 
         createAgentSession()
-      - ├─ createAuth()
-      - ├─ createCodingTools()
       + └─ getServices()
-      +    ├─ createAuth()
-      +    ├─ createSettings()
-      +    └─ createCodingTools()
 
       src/services.ts
 
         getServices()
-        ├─ createAuth()
-      + ├─ createSettings()
-        └─ createCodingTools()"
+      + └─ createSettings()"
     `)
   })
 
-  test("limits call stacks to six levels", async () => {
+  test("shows only direct function and method calls", async () => {
     const repoPath = createDeepCallRepo()
     const callDiff = await createCallDiff({
       cwd: repoPath,
@@ -203,16 +189,10 @@ describe("createCallDiff", () => {
     })
     const ascii = callDiff["src/flow.ts"]![0]!.ascii
 
-    expect(ascii).not.toContain("level7")
     expect(`\n${ascii}`).toMatchInlineSnapshot(`
       "
         start()
-      + └─ level1()
-      +    └─ level2()
-      +       └─ level3()
-      +          └─ level4()
-      +             └─ level5()
-      +                └─ level6()"
+      + └─ level1()"
     `)
   })
 
@@ -238,19 +218,12 @@ describe("createCallDiff", () => {
     expect(`\n${normalized}`).toMatchInlineSnapshot(`
       "
       └── src
-                                           ├── services.ts (+1)
-                                           │     getServices()
-                                           │     ├─ createAuth()
-                                           │   + ├─ createSettings()
-                                           │     └─ createCodingTools()
-                                           └── session.ts (+2,-3)
-                                                 createAgentSession()
-                                               - ├─ createAuth()
-                                               - ├─ createCodingTools()
-                                               + └─ getServices()
-                                               +    ├─ createAuth()
-                                               +    ├─ createSettings()
-                                               +    └─ createCodingTools()
+                                             ├── services.ts (+1)
+                                             │     getServices()
+                                             │   + └─ createSettings()
+                                             └── session.ts (+2,-3)
+                                                   createAgentSession()
+                                                 + └─ getServices()
 
 
        src/services.ts +1-0

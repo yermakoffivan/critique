@@ -2,7 +2,7 @@
 // Builds git commands, parses diff files, detects filetypes for syntax highlighting,
 // and provides helpers for unified/split view mode selection.
 
-import { execSync } from "child_process"
+import { execSync, execFileSync } from "child_process"
 import { buildDirectoryTree } from "./directory-tree.js"
 
 /**
@@ -299,6 +299,391 @@ export function filterParsedFilesByPatterns<T extends ParsedFile>(
 }
 
 /**
+ * If --commit contains range syntax (A..B or A...B), treat it as a base ref instead.
+ * git show with ranges outputs commit metadata interleaved with diffs that parsePatch
+ * cannot parse. Redirecting to base reuses the existing range handling.
+ *
+ * buildGitCommand and resolveCommitRange must agree on this rewrite, otherwise the
+ * printed commit list would describe a different range than the rendered diff.
+ */
+function normalizeRangeOptions(options: GitCommandOptions): GitCommandOptions {
+  if (options.commit?.includes("..")) {
+    return { ...options, base: options.commit, commit: undefined };
+  }
+  return options;
+}
+
+/** Split "A...B" or "A..B" into its two refs. Returns null for a plain ref. */
+function splitRangeRef(ref: string): { base: string; head: string; dots: ".." | "..." } | null {
+  const threeDots = ref.match(/^(.+)\.\.\.(.+)$/);
+  if (threeDots) return { base: threeDots[1]!, head: threeDots[2]!, dots: "..." };
+  const twoDots = ref.match(/^(.+)\.\.(.+)$/);
+  if (twoDots) return { base: twoDots[1]!, head: twoDots[2]!, dots: ".." };
+  return null;
+}
+
+export interface CommitInfo {
+  hash: string;
+  subject: string;
+}
+
+export interface CommitRange {
+  /** Ref the diff starts from, shown as a trailing "base:" line */
+  baseRef?: string;
+  /** Ref the diff ends at. Paired with baseRef to detect diverged histories. */
+  headRef?: string;
+  /**
+   * True when git compares two trees directly (`git diff A..B`, `git diff <ref>`).
+   * A tree comparison also reverses the changes of commits that exist only on the
+   * base side, so the commit list is incomplete unless base is an ancestor of head.
+   */
+  treeComparison: boolean;
+  /** True when the diff also contains uncommitted working tree changes */
+  includesWorkingTree: boolean;
+  /** Set for `--commit <ref>`, where the diff holds exactly one commit */
+  singleCommit?: string;
+}
+
+/**
+ * Resolve which commits a diff contains, mirroring buildGitCommand's branching.
+ * Returns null when the diff has no commits at all (working tree, staged, stdin).
+ *
+ * Why this exists: a rebased branch can carry commits replayed from a sibling branch,
+ * so `critique <merge-base>` silently publishes work you did not write. Listing the
+ * commits makes that visible before the URL is shared.
+ */
+export function resolveCommitRange(options: GitCommandOptions): CommitRange | null {
+  const opts = normalizeRangeOptions(options);
+
+  // Staged and working-tree diffs contain no commits
+  if (opts.staged) return null;
+
+  // A single commit: `git show <ref>`
+  if (opts.commit) {
+    return { singleCommit: opts.commit, treeComparison: false, includesWorkingTree: false };
+  }
+
+  // Two refs: buildGitCommand uses three-dot, so the diff starts at the merge base
+  // and holds exactly the commits reachable from head but not base.
+  if (opts.base && opts.head) {
+    return {
+      baseRef: opts.base,
+      headRef: opts.head,
+      treeComparison: false,
+      includesWorkingTree: false,
+    };
+  }
+
+  if (opts.base) {
+    const range = splitRangeRef(opts.base);
+    if (range) {
+      return {
+        baseRef: range.base,
+        headRef: range.head,
+        // Two-dot compares the two trees directly. Three-dot starts at the merge base.
+        treeComparison: range.dots === "..",
+        includesWorkingTree: false,
+      };
+    }
+
+    // Single ref: `git diff <base>` compares the ref tree to the working tree, so the
+    // diff holds every commit since <base> plus any uncommitted changes.
+    return {
+      baseRef: opts.base,
+      headRef: "HEAD",
+      treeComparison: true,
+      includesWorkingTree: true,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Upper bound on commits fetched in one `git log`. Ranges this long are pathological,
+ * but the exact total still comes from `git rev-list --count`, so the printed count is
+ * never a lie.
+ */
+export const COMMIT_FETCH_CAP = 5000;
+
+export interface RangeCommits {
+  /** Commits added by head, newest first */
+  added: CommitInfo[];
+  /**
+   * Commits that exist only on the base side. Non-empty only for a tree comparison
+   * between diverged refs, where the diff reverses their changes.
+   */
+  reversed: CommitInfo[];
+  /** Exact number of added commits, even when the fetched list was capped */
+  addedTotal: number;
+  /** Exact number of reversed commits */
+  reversedTotal: number;
+  /** Commit the diff actually starts from. For three-dot this is the merge base. */
+  base?: CommitInfo;
+}
+
+/**
+ * Collect the commits a diff contains. Never throws: returns null when a ref is
+ * unknown, the repo has no commits yet, or git fails for any other reason. A failed
+ * lookup must never block the diff itself.
+ */
+export function listCommits(range: CommitRange): RangeCommits | null {
+  if (range.singleCommit) {
+    const commit = getCommitInfo(range.singleCommit);
+    if (!commit) return null;
+    // No base line: `git show <ref>` already scopes the diff to that one commit
+    return { added: [commit], reversed: [], addedTotal: 1, reversedTotal: 0 };
+  }
+
+  if (!range.baseRef || !range.headRef) return null;
+
+  const added = gitLog([`${range.baseRef}..${range.headRef}`]);
+  if (!added) return null;
+
+  // A tree comparison between diverged refs also undoes every commit that exists only
+  // on the base side. Those commits are part of the diff, so they must be listed.
+  // merge-base --is-ancestor exits 0 when the histories are linear, so a non-null
+  // result means nothing is reversed
+  const linear =
+    runGit(["merge-base", "--is-ancestor", range.baseRef, range.headRef]) !== null;
+  const reversed =
+    range.treeComparison && !linear
+      ? (gitLog([`${range.headRef}..${range.baseRef}`]) ?? { commits: [], total: 0 })
+      : { commits: [], total: 0 };
+
+  return {
+    added: added.commits,
+    reversed: reversed.commits,
+    addedTotal: added.total,
+    reversedTotal: reversed.total,
+    base: resolveBaseCommit(range) ?? undefined,
+  };
+}
+
+/**
+ * Find the commit the diff actually starts from.
+ *
+ * A three-dot diff starts at the merge base, not at the named ref, so naming the ref
+ * would point at a commit whose changes are not in the diff. A tree comparison really
+ * does start at the ref itself.
+ */
+function resolveBaseCommit(range: CommitRange): CommitInfo | null {
+  if (!range.baseRef) return null;
+  if (range.treeComparison || !range.headRef) return getCommitInfo(range.baseRef);
+
+  const mergeBase = runGit(["merge-base", range.baseRef, range.headRef]);
+  if (!mergeBase) return getCommitInfo(range.baseRef);
+  return getCommitInfo(mergeBase.trim());
+}
+
+/**
+ * Run `git log` for a range. Returns the fetched commits plus the exact total, which
+ * can be larger than the fetched list when the range exceeds COMMIT_FETCH_CAP.
+ */
+function gitLog(revArgs: string[]): { commits: CommitInfo[]; total: number } | null {
+  const output = runGit([
+    "log",
+    // Tab separator: subjects can contain anything except a newline or a tab
+    "--format=%h%x09%s",
+    `--max-count=${COMMIT_FETCH_CAP}`,
+    ...revArgs,
+  ]);
+  if (output === null) return null;
+
+  const commits = parseCommitLines(output);
+  if (commits.length < COMMIT_FETCH_CAP) {
+    return { commits, total: commits.length };
+  }
+
+  // Hit the cap, so the true total needs a separate count
+  const counted = runGit(["rev-list", "--count", ...revArgs]);
+  const total = counted ? Number.parseInt(counted.trim(), 10) : Number.NaN;
+  return { commits, total: Number.isNaN(total) ? commits.length : total };
+}
+
+/** Look up a single ref. Returns null on failure. */
+export function getCommitInfo(ref: string): CommitInfo | null {
+  const output = runGit(["log", "-1", "--format=%h%x09%s", ref]);
+  if (output === null) return null;
+  return parseCommitLines(output)[0] ?? null;
+}
+
+/**
+ * Run git with an argument array. Returns null when git exits non-zero.
+ * execFileSync, not execSync: refs are user input and must never reach a shell.
+ */
+function runGit(args: string[]): string | null {
+  try {
+    return execFileSync("git", args, {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function parseCommitLines(output: string): CommitInfo[] {
+  return output
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const tab = line.indexOf("\t");
+      if (tab === -1) return { hash: line, subject: "" };
+      return { hash: line.slice(0, tab), subject: line.slice(tab + 1) };
+    });
+}
+
+/**
+ * Check whether tracked files have uncommitted changes.
+ *
+ * Untracked files are excluded on purpose: `git diff <base>` never includes them,
+ * so counting them would claim the diff holds work that is not in it.
+ */
+export function hasUncommittedChanges(): boolean {
+  const output = runGit(["status", "--porcelain", "--untracked-files=no"]);
+  return output !== null && output.trim().length > 0;
+}
+
+/**
+ * Commits printed before the list is truncated.
+ *
+ * The list is newest first, and a rebase replays a foreign commit right above the
+ * base, so the oldest entries are the ones most likely to be a mistake. Truncation
+ * therefore keeps a tail of the oldest commits instead of cutting them off.
+ */
+export const MAX_LISTED_NEWEST = 12;
+export const MAX_LISTED_OLDEST = 5;
+
+export interface CommitSummaryInput {
+  commits: RangeCommits;
+  fileCount: number;
+  additions: number;
+  deletions: number;
+  /** Adds a note that uncommitted work is part of the diff */
+  includesWorkingTree?: boolean;
+  /** Ref names used in the diverged-history warning */
+  baseRef?: string;
+  headRef?: string;
+  maxNewest?: number;
+  maxOldest?: number;
+}
+
+/**
+ * Format the commit summary block printed before a diff.
+ * Plain text on purpose: no colors, so it stays snapshot-testable and pipes cleanly.
+ */
+export function formatCommitSummary(input: CommitSummaryInput): string {
+  const {
+    commits,
+    fileCount,
+    additions,
+    deletions,
+    includesWorkingTree,
+    baseRef,
+    headRef,
+    maxNewest = MAX_LISTED_NEWEST,
+    maxOldest = MAX_LISTED_OLDEST,
+  } = input;
+  const baseCommit = commits.base;
+
+  const plural = (count: number, word: string) =>
+    `${count} ${word}${count === 1 ? "" : "s"}`;
+
+  const diverged = commits.reversedTotal > 0;
+  const headline = diverged
+    ? `${plural(commits.addedTotal, "commit")} added, ${plural(commits.reversedTotal, "commit")} reversed`
+    : plural(commits.addedTotal, "commit");
+
+  const lines: string[] = [
+    `${headline}, ${plural(fileCount, "file")}, +${additions} -${deletions}`,
+    "",
+  ];
+
+  const hashWidth = Math.max(
+    ...commits.added.map((c) => c.hash.length),
+    ...commits.reversed.map((c) => c.hash.length),
+    baseCommit?.hash.length ?? 0,
+    1,
+  );
+  const indent = diverged ? "    " : "  ";
+  const formatCommit = (commit: CommitInfo) =>
+    `${indent}${commit.hash.padEnd(hashWidth)}  ${commit.subject}`;
+
+  if (diverged) {
+    lines.push(`  added by ${headRef ?? "head"}:`);
+  }
+  for (const line of truncateCommits({
+    commits: commits.added,
+    total: commits.addedTotal,
+    maxNewest,
+    maxOldest,
+  })) {
+    lines.push(typeof line === "string" ? `${indent}${line}` : formatCommit(line));
+  }
+
+  if (diverged) {
+    lines.push("");
+    lines.push(`  reversed from ${baseRef ?? "base"}:`);
+    for (const line of truncateCommits({
+      commits: commits.reversed,
+      total: commits.reversedTotal,
+      maxNewest,
+      maxOldest,
+    })) {
+      lines.push(typeof line === "string" ? `${indent}${line}` : formatCommit(line));
+    }
+    lines.push("");
+    lines.push(
+      `  ! ${baseRef ?? "base"} and ${headRef ?? "head"} have diverged, so this diff also undoes the commits above.`,
+    );
+  } else if (baseCommit) {
+    lines.push(`  base: ${baseCommit.hash.padEnd(hashWidth)}  ${baseCommit.subject}`);
+  }
+
+  if (includesWorkingTree) {
+    lines.push("");
+    lines.push("  + uncommitted working tree changes");
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Pick which commits to print. Keeps the newest and the oldest, because a replayed
+ * commit sits next to the base and must never be the entry that gets cut.
+ * String entries are literal separator lines.
+ */
+export function truncateCommits(input: {
+  commits: CommitInfo[];
+  total: number;
+  maxNewest?: number;
+  maxOldest?: number;
+}): (CommitInfo | string)[] {
+  const {
+    commits,
+    total,
+    maxNewest = MAX_LISTED_NEWEST,
+    maxOldest = MAX_LISTED_OLDEST,
+  } = input;
+  const hidden = total - commits.length;
+
+  if (commits.length <= maxNewest + maxOldest) {
+    if (hidden === 0) return commits;
+    // The fetch cap dropped the oldest commits, so no tail can be shown
+    return [...commits, `… ${hidden} more commit${hidden === 1 ? "" : "s"} not shown`];
+  }
+
+  const skipped = commits.length - maxNewest - maxOldest + hidden;
+  return [
+    ...commits.slice(0, maxNewest),
+    `… ${skipped} more commit${skipped === 1 ? "" : "s"}`,
+    ...commits.slice(commits.length - maxOldest),
+  ];
+}
+
+/**
  * Build git command string based on options
  */
 export function buildGitCommand(options: GitCommandOptions): string {
@@ -321,13 +706,7 @@ export function buildGitCommand(options: GitCommandOptions): string {
       ? `-- ${filters.map((f: string) => `'${f}'`).join(" ")}`
       : "";
 
-  // If --commit contains range syntax (A..B or A...B), treat it as a base ref
-  // instead. git show with ranges outputs commit metadata interleaved with diffs
-  // that parsePatch cannot parse. Redirecting to base reuses the existing range
-  // handling below (two-dot and three-dot parsing).
-  if (options.commit?.includes("..")) {
-    options = { ...options, base: options.commit, commit: undefined };
-  }
+  options = normalizeRangeOptions(options);
 
   if (options.staged) {
     return `git diff --cached ${noExtDiffArg} --no-prefix ${renameArg} ${submoduleArg} ${contextArg} ${filterArg}`.trim();
@@ -341,18 +720,9 @@ export function buildGitCommand(options: GitCommandOptions): string {
   }
   // Detect range syntax in single base argument (e.g., "origin/main...HEAD" or "main..feature")
   if (options.base && !options.head) {
-    // Three-dot syntax: A...B (merge-base to B, like GitHub PRs)
-    const threeDotsMatch = options.base.match(/^(.+)\.\.\.(.+)$/);
-    if (threeDotsMatch) {
-      const [, rangeBase, rangeHead] = threeDotsMatch;
-      return `git diff ${rangeBase}...${rangeHead} ${noExtDiffArg} --no-prefix ${renameArg} ${submoduleArg} ${contextArg} ${filterArg}`.trim();
-    }
-
-    // Two-dot syntax: A..B (commits in B not in A)
-    const twoDotsMatch = options.base.match(/^(.+)\.\.(.+)$/);
-    if (twoDotsMatch) {
-      const [, rangeBase, rangeHead] = twoDotsMatch;
-      return `git diff ${rangeBase}..${rangeHead} ${noExtDiffArg} --no-prefix ${renameArg} ${submoduleArg} ${contextArg} ${filterArg}`.trim();
+    const range = splitRangeRef(options.base);
+    if (range) {
+      return `git diff ${range.base}${range.dots}${range.head} ${noExtDiffArg} --no-prefix ${renameArg} ${submoduleArg} ${contextArg} ${filterArg}`.trim();
     }
   }
   // Single ref: compare ref to working tree (like git diff)

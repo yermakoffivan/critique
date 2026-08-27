@@ -8,6 +8,7 @@
 import "./patch-terminal-dimensions.js";
 
 import { goke, wrapJsonSchema } from "goke";
+import dedent from "string-dedent";
 import {
   createRoot,
   flushSync,
@@ -57,9 +58,17 @@ import {
   getDirtySubmodulePaths,
   buildSubmoduleDiffCommand,
   getFilterPatterns,
+  resolveCommitRange,
+  listCommits,
+  getCommitInfo,
+  hasUncommittedChanges,
+  formatCommitSummary,
+  truncateCommits,
   IGNORED_FILES,
   type ParsedFile,
   type GitCommandOptions,
+  type CommitInfo,
+  type RangeCommits,
 } from "./diff-utils.js";
 import type { TreeFileInfo } from "./directory-tree.js";
 import { createCallDiff, type CallDiffByFile } from "./calldiff.js";
@@ -1115,6 +1124,8 @@ interface WebModeOptions {
   theme?: string;
   json?: boolean;
   callDiffByFile?: CallDiffByFile;
+  /** Commits contained in the diff, included in the --json payload */
+  commits?: RangeCommits | null;
 }
 
 async function runWebMode(
@@ -1183,7 +1194,16 @@ async function runWebMode(
           removed: deletions,
         };
       });
-      console.log(JSON.stringify({ url: result.url, id: result.id, files: fileStats }));
+      console.log(
+        JSON.stringify({
+          url: result.url,
+          id: result.id,
+          files: fileStats,
+          commits: options.commits?.added ?? [],
+          // Non-empty only when a tree comparison undoes commits from the base side
+          reversedCommits: options.commits?.reversed ?? [],
+        }),
+      );
     }
 
     if (options.open) {
@@ -1475,6 +1495,68 @@ async function filterCombinedDiffByPatterns(
   return filteredFiles.map((file) => formatPatch(file)).join("\n");
 }
 
+/**
+ * Print the commits contained in the rendered diff, before the diff itself.
+ *
+ * Why: a rebased branch can carry commits replayed from a sibling branch, so the
+ * merge base is often too far back and a shared link silently includes work you
+ * did not write. Printing the list makes that visible on every run.
+ *
+ * Returns the commits for --json output and the TUI header, or null when the diff
+ * has no commits (working tree, staged, stdin).
+ */
+async function reportCommitsInRange(
+  diffContent: string,
+  options: {
+    staged?: boolean;
+    commit?: string;
+    base?: string;
+    head?: string;
+    /** Progress output goes to stderr when --json is set, keeping stdout parseable */
+    json?: boolean;
+    silent?: boolean;
+  },
+): Promise<RangeCommits | null> {
+  if (options.silent) return null;
+
+  const range = resolveCommitRange({
+    staged: options.staged,
+    commit: options.commit,
+    base: options.base,
+    head: options.head,
+  });
+  if (!range) return null;
+
+  const commits = listCommits(range);
+  if (!commits || commits.addedTotal + commits.reversedTotal === 0) return null;
+
+  const { parsePatch } = await import("diff");
+  const files = parseGitDiffFiles(diffContent, parsePatch);
+  let additions = 0;
+  let deletions = 0;
+  for (const file of files) {
+    const counts = countChanges(file.hunks);
+    additions += counts.additions;
+    deletions += counts.deletions;
+  }
+
+  const log = options.json ? console.error.bind(console) : console.log.bind(console);
+  log(
+    formatCommitSummary({
+      commits,
+      fileCount: files.length,
+      additions,
+      deletions,
+      includesWorkingTree: range.includesWorkingTree && hasUncommittedChanges(),
+      baseRef: range.baseRef,
+      headRef: range.headRef,
+    }),
+  );
+  log("");
+
+  return commits;
+}
+
 function formatPreviewExpiry(expiresInDays?: number | null): string {
   if (expiresInDays === null) {
     return "(never expires)";
@@ -1522,9 +1604,11 @@ class ScrollAcceleration {
 export interface AppProps {
   parsedFiles: ParsedFile[];
   callDiffByFile?: CallDiffByFile;
+  /** Commits contained in the diff. The alt screen hides the printed list, so show it here too. */
+  commits?: RangeCommits | null;
 }
 
-export function App({ parsedFiles, callDiffByFile }: AppProps): React.ReactElement {
+export function App({ parsedFiles, callDiffByFile, commits }: AppProps): React.ReactElement {
   const { width: initialWidth } = useTerminalDimensions();
   const [width, setWidth] = React.useState(initialWidth);
   const [scrollAcceleration] = React.useState(() => new ScrollAcceleration());
@@ -1706,6 +1790,30 @@ export function App({ parsedFiles, callDiffByFile }: AppProps): React.ReactEleme
   // Render all files content (used in both theme picker preview and main view)
   const renderAllFiles = () => (
     <box style={{ flexDirection: "column" }}>
+      {/* Commits in the range, so the alt screen does not hide what the diff contains */}
+      {commits && commits.addedTotal > 0 && (
+        <box style={{ flexDirection: "column", marginBottom: 2, paddingLeft: 1 }}>
+          <text fg={mutedColor}>
+            {commits.addedTotal} commit{commits.addedTotal === 1 ? "" : "s"}
+            {commits.reversedTotal > 0
+              ? `, ${commits.reversedTotal} reversed by a diverged base`
+              : ""}
+          </text>
+          {truncateCommits({ commits: commits.added, total: commits.addedTotal }).map((entry, idx) =>
+            typeof entry === "string" ? (
+              <text key={`gap-${idx}`} fg={mutedColor}>
+                {entry}
+              </text>
+            ) : (
+              <box key={entry.hash} style={{ flexDirection: "row" }}>
+                <text fg={mutedColor}>{entry.hash} </text>
+                <text fg={textColor}>{entry.subject}</text>
+              </box>
+            ),
+          )}
+        </box>
+      )}
+
       {/* Directory tree at the top */}
       <box style={{ marginBottom: 2 }}>
         <DirectoryTreeView
@@ -2059,10 +2167,34 @@ cli
 cli
   .command(
     "[base] [head]",
-    "Show diff for git references (defaults to unstaged changes)",
+    dedent`
+
+      Show diff for git references (defaults to unstaged changes).
+
+      Prints the commits contained in the range before the diff, so you can see
+      exactly what a shared link carries.
+
+      > Tip: a rebased branch can carry commits replayed from another branch, so
+      > the merge base is often too far back. If a listed commit is not yours,
+      > pass the first commit of your own work as the base instead.
+
+    `,
   )
+  .example(dedent`
+
+    # Publish only your own work, not a commit a rebase replayed onto the branch
+    critique 7998490 --web "Element identity"
+
+  `)
+  .example(dedent`
+
+    # PR-style comparison, listing every commit on the branch
+    critique main HEAD --web "Branch changes"
+
+  `)
   .option("--staged", "Show staged changes")
   .option("--commit <ref>", "Show changes from a specific commit")
+  .option("--no-commit-list", "Do not list the commits contained in the range")
   .option("--watch", "Watch for file changes and refresh diff")
   .option("--calldiff", "Show experimental call-stack changes in the file tree")
   .option("--context <lines>", "Number of context lines (default: 6)")
@@ -2201,6 +2333,16 @@ cli
       process.exit(0);
     }
 
+    // Show which commits the diff contains before rendering or uploading it
+    const commits = await reportCommitsInRange(cleanedDiff, {
+      staged: options.staged,
+      commit: options.commit,
+      base,
+      head,
+      json: options.json,
+      silent: options.stdin || options.noCommitList,
+    });
+
     // Dispatch to appropriate handler with diff content
     if (options.web !== undefined) {
       const title = typeof options.web === 'string' ? options.web : undefined;
@@ -2212,6 +2354,7 @@ cli
         mobileCols: parseInt(options.mobileCols) || 100,
         theme: options.theme,
         callDiffByFile,
+        commits,
       });
       return;
     }
@@ -2401,7 +2544,7 @@ cli
           );
         }
 
-        return <App parsedFiles={parsedFiles} callDiffByFile={callDiffByFile} />;
+        return <App parsedFiles={parsedFiles} callDiffByFile={callDiffByFile} commits={commits} />;
       }
 
       createRoot(renderer).render(
@@ -2838,12 +2981,20 @@ cli
 
     const cleanedDiff = stripSubmoduleHeaders(fullWebDiff);
 
+    const commits = await reportCommitsInRange(cleanedDiff, {
+      staged: options.staged,
+      commit: options.commit,
+      base,
+      head,
+    });
+
     await runWebMode(cleanedDiff, {
       title: options.title,
       open: options.open,
       cols: parseInt(options.cols) || 240,
       mobileCols: parseInt(options.mobileCols) || 100,
       theme: options.theme,
+      commits,
     });
   });
 

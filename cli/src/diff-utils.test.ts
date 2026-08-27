@@ -19,7 +19,11 @@ import {
   matchesFileFilters,
   detectFiletype,
   ensureGitRepo,
+  resolveCommitRange,
+  formatCommitSummary,
   DEFAULT_CONTEXT_LINES,
+  type CommitInfo,
+  type RangeCommits,
 } from "./diff-utils.js"
 
 // ============================================================================
@@ -911,5 +915,214 @@ describe("ensureGitRepo", () => {
     expect(result.status).toBe(128)
     expect(result.stderr).toContain("not a git repository")
     expect(result.stderr).toContain("Run critique inside a git repository")
+  })
+})
+
+// ============================================================================
+// resolveCommitRange
+// ============================================================================
+//
+// These cases must stay in lockstep with buildGitCommand. If the two disagree,
+// critique prints a commit list that does not match the diff it renders, which
+// is exactly the failure this feature exists to prevent.
+
+describe("resolveCommitRange", () => {
+  it("should return null for diffs that contain no commits", () => {
+    expect(resolveCommitRange({})).toBeNull()
+    expect(resolveCommitRange({ staged: true })).toBeNull()
+  })
+
+  it("should list only the given commit for --commit", () => {
+    expect(resolveCommitRange({ commit: "abc1234" })).toMatchInlineSnapshot(`
+      {
+        "includesWorkingTree": false,
+        "singleCommit": "abc1234",
+        "treeComparison": false,
+      }
+    `)
+  })
+
+  it("should treat --commit with range syntax as a base ref, like buildGitCommand", () => {
+    expect(resolveCommitRange({ commit: "main..feature" })).toEqual(
+      resolveCommitRange({ base: "main..feature" }),
+    )
+  })
+
+  it("should start two refs at the merge base, because buildGitCommand uses three-dot", () => {
+    expect(resolveCommitRange({ base: "main", head: "HEAD" })).toMatchInlineSnapshot(`
+      {
+        "baseRef": "main",
+        "headRef": "HEAD",
+        "includesWorkingTree": false,
+        "treeComparison": false,
+      }
+    `)
+  })
+
+  it("should mark two-dot as a tree comparison but three-dot as merge-base based", () => {
+    // git diff A..B compares two trees, so on diverged histories it also reverses
+    // the commits that exist only on A. git diff A...B never does.
+    const threeDot = resolveCommitRange({ base: "origin/main...HEAD" })
+    const twoDot = resolveCommitRange({ base: "origin/main..HEAD" })
+    expect(threeDot?.treeComparison).toBe(false)
+    expect(twoDot?.treeComparison).toBe(true)
+    expect(threeDot?.baseRef).toBe("origin/main")
+    expect(threeDot?.headRef).toBe("HEAD")
+  })
+
+  it("should include the working tree for a single base ref", () => {
+    // This is the case that silently published a replayed commit:
+    // `critique f948f50` diffs the ref tree against the working tree.
+    expect(resolveCommitRange({ base: "f948f50" })).toMatchInlineSnapshot(`
+      {
+        "baseRef": "f948f50",
+        "headRef": "HEAD",
+        "includesWorkingTree": true,
+        "treeComparison": true,
+      }
+    `)
+  })
+})
+
+// ============================================================================
+// formatCommitSummary
+// ============================================================================
+
+function rangeCommits(input: {
+  added: CommitInfo[]
+  reversed?: CommitInfo[]
+  base?: CommitInfo
+}): RangeCommits {
+  const { added, reversed = [], base } = input
+  return {
+    added,
+    reversed,
+    addedTotal: added.length,
+    reversedTotal: reversed.length,
+    base,
+  }
+}
+
+describe("formatCommitSummary", () => {
+  const commits = [
+    { hash: "7279b76", subject: "Drop the malformed-mutation section from the changeset" },
+    { hash: "2a09302", subject: "Correct the identity docs, and mark the release minor" },
+    { hash: "7998490", subject: "Launch a window without stealing focus" },
+  ]
+
+  it("should list commits with the base ref and working tree note", () => {
+    const output = formatCommitSummary({
+      commits: rangeCommits({
+        added: commits,
+        base: { hash: "f948f50", subject: "Reclaim the style table when the tree shrinks" },
+      }),
+      fileCount: 22,
+      additions: 1573,
+      deletions: 311,
+      includesWorkingTree: true,
+    })
+    expect("\n" + output).toMatchInlineSnapshot(`
+      "
+      3 commits, 22 files, +1573 -311
+
+        7279b76  Drop the malformed-mutation section from the changeset
+        2a09302  Correct the identity docs, and mark the release minor
+        7998490  Launch a window without stealing focus
+        base: f948f50  Reclaim the style table when the tree shrinks
+
+        + uncommitted working tree changes"
+    `)
+  })
+
+  it("should use singular wording for one commit and one file", () => {
+    const output = formatCommitSummary({
+      commits: rangeCommits({ added: [commits[0]!] }),
+      fileCount: 1,
+      additions: 3,
+      deletions: 0,
+    })
+    expect("\n" + output).toMatchInlineSnapshot(`
+      "
+      1 commit, 1 file, +3 -0
+
+        7279b76  Drop the malformed-mutation section from the changeset"
+    `)
+  })
+
+  it("should keep the oldest commits when truncating, because a replay sits next to the base", () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      hash: `commit${String(i).padStart(2, "0")}`,
+      subject: `Change number ${i}`,
+    }))
+    const output = formatCommitSummary({
+      commits: rangeCommits({ added: many }),
+      fileCount: 40,
+      additions: 100,
+      deletions: 50,
+      maxNewest: 3,
+      maxOldest: 2,
+    })
+    expect("\n" + output).toMatchInlineSnapshot(`
+      "
+      25 commits, 40 files, +100 -50
+
+        commit00  Change number 0
+        commit01  Change number 1
+        commit02  Change number 2
+        … 20 more commits
+        commit23  Change number 23
+        commit24  Change number 24"
+    `)
+  })
+
+  it("should report the exact total when the fetch cap dropped commits", () => {
+    const fetched = Array.from({ length: 4 }, (_, i) => ({
+      hash: `commit${i}`,
+      subject: `Change number ${i}`,
+    }))
+    const output = formatCommitSummary({
+      commits: { added: fetched, reversed: [], addedTotal: 9000, reversedTotal: 0 },
+      fileCount: 5,
+      additions: 10,
+      deletions: 2,
+      maxNewest: 3,
+      maxOldest: 2,
+    })
+    expect("\n" + output).toMatchInlineSnapshot(`
+      "
+      9000 commits, 5 files, +10 -2
+
+        commit0  Change number 0
+        commit1  Change number 1
+        commit2  Change number 2
+        commit3  Change number 3
+        … 8996 more commits not shown"
+    `)
+  })
+
+  it("should list both sides when a tree comparison undoes base-only commits", () => {
+    const output = formatCommitSummary({
+      commits: rangeCommits({
+        added: [{ hash: "b111111", subject: "Only on the feature branch" }],
+        reversed: [{ hash: "a222222", subject: "Only on main" }],
+      }),
+      fileCount: 2,
+      additions: 1,
+      deletions: 1,
+      baseRef: "main",
+      headRef: "HEAD",
+    })
+    expect("\n" + output).toMatchInlineSnapshot(`
+      "
+      1 commit added, 1 commit reversed, 2 files, +1 -1
+
+        added by HEAD:
+          b111111  Only on the feature branch
+
+        reversed from main:
+          a222222  Only on main
+
+        ! main and HEAD have diverged, so this diff also undoes the commits above."
+    `)
   })
 })

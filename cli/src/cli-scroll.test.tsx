@@ -63,4 +63,33 @@ describe("App scrollbox", () => {
     expect(after).toContain("a/src/file-")
     expect(after).not.toContain("file-00.ts")
   })
+
+  // The alt screen hides the commit list printed to stdout, so the TUI repeats it
+  // above the file tree. Without this the range is invisible in interactive mode.
+  it("shows the commits in the range above the file tree", async () => {
+    testSetup = await testRender(
+      <App
+        parsedFiles={[createParsedFile(0)]}
+        commits={{
+          added: [
+            { hash: "7998490", subject: "Launch a window without stealing focus" },
+            { hash: "1fb8af7", subject: "Give every element a stable GPUI identity" },
+          ],
+          reversed: [],
+          addedTotal: 2,
+          reversedTotal: 0,
+        }}
+      />,
+      { width: 100, height: 20 },
+    )
+
+    await act(async () => {
+      await testSetup.renderOnce()
+    })
+
+    const frame = testSetup.captureCharFrame()
+    expect(frame).toContain("2 commits")
+    expect(frame).toContain("7998490")
+    expect(frame).toContain("Launch a window without stealing focus")
+  })
 })

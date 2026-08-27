@@ -76,6 +76,62 @@ critique --filter "src/**/*.ts"
 critique --filter "src/**/*.ts" --filter "lib/**/*.js"
 ```
 
+## Which Commits a Diff Contains
+
+Whenever a diff spans commits, critique lists them before the diff or the URL.
+
+```
+3 commits, 22 files, +1573 -311
+
+  2a09302  Correct the identity docs, and mark the release minor
+  1fb8af7  Give every element a stable GPUI identity
+  7998490  Launch a window without stealing focus
+  base: f948f50  Reclaim the style table when the tree shrinks
+
+  + uncommitted working tree changes
+```
+
+This matters because a **rebased branch can carry commits replayed from another
+branch**. The merge base is then too far back, and a shared link silently includes
+work you did not write. If a listed commit is not yours, pass the first commit of
+**your own work** as the base:
+
+```bash
+# Wrong: the merge base pulls in a commit a rebase replayed onto the branch
+critique f948f50 --web "Element identity"
+
+# Right: start from your own first commit
+critique 7998490 --web "Element identity"
+```
+
+Long ranges are truncated, but the **oldest commits are always kept**, because a rebase
+replays a foreign commit right above the base. Silence the list in scripts with
+`--no-commit-list`. With `--json` it goes to stderr and the commits are added to the
+JSON payload instead.
+
+### Diverged Branches
+
+`critique A..B` and `critique <ref>` compare two trees directly. On **diverged**
+branches such a diff also **undoes** every commit that exists only on the base side.
+Those commits are part of the diff, so critique lists them too:
+
+```
+1 commit added, 1 commit reversed, 2 files, +1 -1
+
+  added by right:
+    a279fbe  Only on right
+
+  reversed from left:
+    d395611  Only on left
+
+  ! left and right have diverged, so this diff also undoes the commits above.
+```
+
+`critique A...B` and `critique A B` start at the **merge base** instead, so they never
+reverse anything, and the `base:` line names the merge base rather than the ref.
+
+Plain unstaged and `--staged` diffs contain no commits, so nothing is printed.
+
 ## Call-stack Diffs
 
 `--calldiff` uses [calldiff](https://github.com/tanishqkancharla/calldiff) to show how function calls changed. Each changed call tree appears below its source file in the top file tree.
@@ -155,8 +211,9 @@ Generated URLs look like `critique.work/v/<id>`.
 | `--mobile-cols <n>` | Mobile render width | `100` |
 | `--filter <pattern>` | Filter files by glob, can be repeated | none |
 | `--theme <name>` | Use a fixed theme instead of auto light and dark mode | none |
+| `--no-commit-list` | Do not list the commits contained in the range | off |
 | `--open` | Open the URL in your browser | none |
-| `--json` | Print `{ url, id, files }` for scripts | none |
+| `--json` | Print `{ url, id, files, commits }` for scripts | none |
 
 ### How Web Uploads Work
 

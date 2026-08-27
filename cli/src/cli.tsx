@@ -3031,6 +3031,7 @@ cli
 
 if (import.meta.main) {
   cli.help();
+  cli.completions();
   cli.version(packageJson.version);
   cli.parse();
 }

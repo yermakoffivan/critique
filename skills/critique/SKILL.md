@@ -74,17 +74,17 @@ critique hunks list
 critique hunks list --filter "src/**/*.ts"
 
 # Stage specific hunks by ID
-critique hunks add 'src/main.ts:@-10,6+10,7'
-critique hunks add 'src/main.ts:@-10,6+10,7' 'src/utils.ts:@-5,3+5,4'
+critique hunks add 'src/main.ts:@a1b2c3d4e5f6'
+critique hunks add 'src/main.ts:@a1b2c3d4e5f6' 'src/utils.ts:@f6e5d4c3b2a1'
 ```
 
-Hunk ID format: `file:@-oldStart,oldLines+newStart,newLines` — derived from the `@@` diff header, stable across runs.
+Hunk ID format: `file:@<hash>` or `file:@<hash>.1`. The hash is from added and removed lines, so unrelated edits above or below the hunk do not change the ID. Duplicate payloads in the same file get `.1`, `.2`. Old `file:@-oldStart,...` IDs are no longer accepted. `hunks list` still prints the `@@` header under each ID.
 
 **Typical workflow:**
 
 ```bash
 critique hunks list                          # see all unstaged hunks
-critique hunks add 'file:@-10,6+10,7'       # stage only your hunks
+critique hunks add 'file:@a1b2c3d4e5f6'     # stage only your hunks
 git commit -m "your changes"                 # commit separately
 ```
 

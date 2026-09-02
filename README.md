@@ -317,19 +317,23 @@ critique hunks list --staged
 critique hunks list --filter "src/**/*.ts"
 
 # Stage one hunk by ID
-critique hunks add 'src/main.ts:@-10,6+10,7'
+critique hunks add 'src/main.ts:@a1b2c3d4e5f6'
 
 # Stage multiple hunks
-critique hunks add 'src/main.ts:@-10,6+10,7' 'src/utils.ts:@-5,3+5,4'
+critique hunks add 'src/main.ts:@a1b2c3d4e5f6' 'src/utils.ts:@f6e5d4c3b2a1'
 ```
 
 Hunk IDs use this format:
 
 ```text
-file:@-oldStart,oldLines+newStart,newLines
+file:@<hash>
+file:@<hash>.1
+file:@<hash>.2
 ```
 
-The ID comes from the unified diff `@@` header, so it stays stable across runs.
+The hash is from the hunk's added and removed lines, not the `@@` line numbers. Unrelated edits above or below the hunk do not change the ID. Duplicate payloads in the same file get `.1`, `.2`, and so on. Old `file:@-oldStart,...` IDs are no longer accepted.
+
+`critique hunks list` still prints the `@@` header under each ID, so you can see where the hunk sits in the file.
 
 ## E-Ink Reading
 

@@ -16,6 +16,7 @@ export {
   updateCoverageFromGroup,
   getUncoveredPortions,
   formatUncoveredMessage,
+  hunkContentHash,
   hunkToStableId,
   parseHunkId,
   findHunkByStableId,

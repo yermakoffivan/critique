@@ -2035,7 +2035,7 @@ cli
 
     // Output each hunk with its stable ID
     for (const hunk of hunks) {
-      const stableId = hunkToStableId(hunk);
+      const stableId = hunkToStableId(hunk, hunks);
       console.log(stableId);
 
       // Print the @@ header line
@@ -2080,7 +2080,8 @@ cli
       const parsed = parseHunkId(id);
       if (!parsed) {
         console.error(`Invalid hunk ID format: ${id}`);
-        console.error("Expected format: file:@-oldStart,oldLines+newStart,newLines");
+        console.error("Expected format: file:@<hash> or file:@<hash>.1");
+        console.error("Existing file:@-oldStart,... IDs are no longer accepted. Run 'critique hunks list' again.");
         process.exit(1);
       }
       const existing = fileGroups.get(parsed.filename);

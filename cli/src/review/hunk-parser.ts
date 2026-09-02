@@ -2,8 +2,11 @@
 // Supports hunk splitting for progressive disclosure, coverage tracking,
 // and generates context XML for AI prompts with cat -n style line numbers.
 
+import crypto from "crypto"
 import type { IndexedHunk, HunkCoverage, ReviewCoverage, UncoveredPortion, ReviewGroup } from "./types.js"
 import { IGNORED_FILES, stripSubmoduleHeaders, parseGitDiffFiles } from "../diff-utils.js"
+
+const HUNK_HASH_LENGTH = 12
 
 /**
  * Additional patterns for auto-generated files that should be skipped in reviews
@@ -105,65 +108,92 @@ export function createHunkMap(hunks: IndexedHunk[]): Map<number, IndexedHunk> {
 }
 
 /**
- * Generate a stable hunk ID based on file and line positions.
- * Format: `filename:@-oldStart,oldLines+newStart,newLines`
- * 
- * This format is stable across runs (unlike incremental IDs) because it's
- * derived from the hunk's position in the file, which doesn't change unless
- * the diff itself changes.
+ * Hash of a hunk's added and removed lines. Context and @@ line numbers are ignored,
+ * so the ID stays the same when another agent inserts unrelated lines above or below.
  */
-export function hunkToStableId(hunk: IndexedHunk): string {
-  return `${hunk.filename}:@-${hunk.oldStart},${hunk.oldLines}+${hunk.newStart},${hunk.newLines}`
+export function hunkContentHash(hunk: IndexedHunk): string {
+  const payload = hunk.lines
+    .filter((line) => line.startsWith("+") || line.startsWith("-"))
+    .join("\n")
+  return crypto.createHash("sha256").update(payload).digest("hex").slice(0, HUNK_HASH_LENGTH)
+}
+
+function hunksWithSameHash(hunk: IndexedHunk, hunks: IndexedHunk[]): IndexedHunk[] {
+  const hash = hunkContentHash(hunk)
+  return hunks
+    .filter((candidate) => candidate.filename === hunk.filename && hunkContentHash(candidate) === hash)
+    .sort((a, b) => a.oldStart - b.oldStart || a.hunkIndex - b.hunkIndex)
+}
+
+function isSameHunk(a: IndexedHunk, b: IndexedHunk): boolean {
+  return a.oldStart === b.oldStart && a.newStart === b.newStart && a.hunkIndex === b.hunkIndex
 }
 
 /**
- * Parse a stable hunk ID back into its components.
- * Returns null if the ID format is invalid.
+ * Stable hunk ID from change-line content.
+ * Unique payload: `filename:@hash`
+ * Duplicate payloads in the same file: `filename:@hash.1`, `filename:@hash.2`
+ * Suffixes include `.1` so a leftover duplicate cannot steal an unsuffixed ID.
+ */
+export function hunkToStableId(hunk: IndexedHunk, hunks: IndexedHunk[]): string {
+  const hash = hunkContentHash(hunk)
+  const matches = hunksWithSameHash(hunk, hunks)
+  if (matches.length <= 1) return `${hunk.filename}:@${hash}`
+
+  const index = matches.findIndex((candidate) => isSameHunk(candidate, hunk))
+  const occurrence = index === -1 ? 1 : index + 1
+  return `${hunk.filename}:@${hash}.${occurrence}`
+}
+
+/**
+ * Parse a content-hash hunk ID. Returns null if the ID format is invalid.
  */
 export function parseHunkId(id: string): {
   filename: string
-  oldStart: number
-  oldLines: number
-  newStart: number
-  newLines: number
+  hash: string
+  occurrence?: number
 } | null {
-  // Format: filename:@-oldStart,oldLines+newStart,newLines
-  // The filename can contain colons, so we split on the last :@ sequence
   const atIndex = id.lastIndexOf(":@")
   if (atIndex === -1) return null
 
   const filename = id.slice(0, atIndex)
-  const positionPart = id.slice(atIndex + 2) // Skip ":@"
-
-  // Parse -oldStart,oldLines+newStart,newLines
-  const match = positionPart.match(/^-(\d+),(\d+)\+(\d+),(\d+)$/)
+  const rest = id.slice(atIndex + 2)
+  const match = rest.match(/^([a-f0-9]{12})(?:\.(\d+))?$/)
   if (!match) return null
+
+  if (!match[2]) {
+    return { filename, hash: match[1]! }
+  }
+
+  const occurrence = parseInt(match[2], 10)
+  if (occurrence < 1) return null
 
   return {
     filename,
-    oldStart: parseInt(match[1]!, 10),
-    oldLines: parseInt(match[2]!, 10),
-    newStart: parseInt(match[3]!, 10),
-    newLines: parseInt(match[4]!, 10),
+    hash: match[1]!,
+    occurrence,
   }
 }
 
 /**
- * Find a hunk by its stable ID in a list of hunks.
- * Matches by filename and line positions.
+ * Find a hunk by content-hash ID.
+ * Unsuffixed IDs match only when the hash is unique.
+ * Suffixed IDs match only while two or more duplicates still exist.
  */
 export function findHunkByStableId(hunks: IndexedHunk[], stableId: string): IndexedHunk | undefined {
   const parsed = parseHunkId(stableId)
   if (!parsed) return undefined
 
-  return hunks.find(
-    h =>
-      h.filename === parsed.filename &&
-      h.oldStart === parsed.oldStart &&
-      h.oldLines === parsed.oldLines &&
-      h.newStart === parsed.newStart &&
-      h.newLines === parsed.newLines
-  )
+  const matches = hunks
+    .filter((hunk) => hunk.filename === parsed.filename && hunkContentHash(hunk) === parsed.hash)
+    .sort((a, b) => a.oldStart - b.oldStart || a.hunkIndex - b.hunkIndex)
+
+  if (parsed.occurrence === undefined) {
+    return matches.length === 1 ? matches[0] : undefined
+  }
+
+  if (matches.length < 2) return undefined
+  return matches[parsed.occurrence - 1]
 }
 
 /**

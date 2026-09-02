@@ -14,6 +14,11 @@ import {
   getUncoveredPortions,
   formatUncoveredMessage,
   combineHunkPatches,
+  hunkContentHash,
+  hunkToStableId,
+  parseHunkId,
+  findHunkByStableId,
+  parseHunksWithIds,
 } from "./hunk-parser.js"
 import type { ReviewGroup } from "./types.js"
 
@@ -1301,5 +1306,136 @@ describe("combineHunkPatches with formatPatch-style rawDiff", () => {
     expect(parsed[0]!.hunks.length).toBe(2)
     expect(parsed[0]!.hunks[0]!.oldStart).toBe(1)
     expect(parsed[0]!.hunks[1]!.oldStart).toBe(20)
+  })
+})
+
+function gitDiff(filename: string, hunks: string[][]): string {
+  const bodies = hunks.map((lines) => lines.join("\n"))
+  return [
+    `diff --git ${filename} ${filename}`,
+    `--- ${filename}`,
+    `+++ ${filename}`,
+    ...bodies,
+  ].join("\n")
+}
+
+describe("content-hash stable hunk IDs", () => {
+  it("hashes only added and removed lines", () => {
+    const hunk = createHunk(1, "src/main.ts", 0, 10, 10, [
+      " function foo() {",
+      "-  return null",
+      "+  return value",
+      " }",
+    ])
+
+    expect(hunkContentHash(hunk)).toMatchInlineSnapshot(`"06c97f348ca5"`)
+    expect(hunkToStableId(hunk, [hunk])).toBe(`src/main.ts:@${hunkContentHash(hunk)}`)
+  })
+
+  it("keeps the same ID when context lines change", () => {
+    const original = createHunk(1, "src/main.ts", 0, 10, 10, [
+      " const a = 1",
+      "-  return null",
+      "+  return value",
+      " const b = 2",
+    ])
+    const differentContext = createHunk(1, "src/main.ts", 0, 40, 60, [
+      " const unrelated = true",
+      "-  return null",
+      "+  return value",
+      " const alsoUnrelated = false",
+    ])
+
+    expect(hunkToStableId(differentContext, [differentContext])).toBe(
+      hunkToStableId(original, [original]),
+    )
+  })
+
+  it("keeps the same ID after unrelated edits at the start and end of the file", async () => {
+    const changeLines = [
+      " function mid() {",
+      "-  return 1",
+      "+  return 2",
+      " }",
+    ]
+    const originalDiff = gitDiff("src/file.ts", [
+      ["@@ -50,3 +50,3 @@", ...changeLines],
+    ])
+    const shiftedDiff = gitDiff("src/file.ts", [
+      [
+        "@@ -1,2 +1,4 @@",
+        " // start",
+        "+import { a } from './a'",
+        "+import { b } from './b'",
+        " ",
+      ],
+      ["@@ -50,3 +52,3 @@", ...changeLines],
+      [
+        "@@ -90,1 +92,3 @@",
+        " // end",
+        "+export { mid }",
+        "+export { helper }",
+      ],
+    ])
+
+    const originalHunks = await parseHunksWithIds(originalDiff)
+    const shiftedHunks = await parseHunksWithIds(shiftedDiff)
+    const originalMid = originalHunks.find((hunk) => hunk.lines.includes("-  return 1"))
+    const shiftedMid = shiftedHunks.find((hunk) => hunk.lines.includes("-  return 1"))
+
+    expect(originalMid).toBeDefined()
+    expect(shiftedMid).toBeDefined()
+    expect(shiftedMid!.newStart).not.toBe(originalMid!.newStart)
+    expect(hunkToStableId(shiftedMid!, shiftedHunks)).toBe(
+      hunkToStableId(originalMid!, originalHunks),
+    )
+    expect(findHunkByStableId(shiftedHunks, hunkToStableId(originalMid!, originalHunks))).toBe(shiftedMid)
+  })
+
+  it("suffixes .1 and .2 when two hunks in the same file have the same change lines", () => {
+    const lines = [" ctx", "-old", "+new"]
+    const first = createHunk(1, "src/main.ts", 0, 10, 10, lines)
+    const second = createHunk(2, "src/main.ts", 1, 80, 80, lines)
+    const hunks = [first, second]
+
+    const firstId = hunkToStableId(first, hunks)
+    const secondId = hunkToStableId(second, hunks)
+
+    expect(firstId).toBe(`src/main.ts:@${hunkContentHash(first)}.1`)
+    expect(secondId).toBe(`src/main.ts:@${hunkContentHash(second)}.2`)
+    expect(parseHunkId(firstId)).toEqual({
+      filename: "src/main.ts",
+      hash: hunkContentHash(first),
+      occurrence: 1,
+    })
+    expect(parseHunkId(secondId)).toEqual({
+      filename: "src/main.ts",
+      hash: hunkContentHash(second),
+      occurrence: 2,
+    })
+    expect(findHunkByStableId(hunks, firstId)).toBe(first)
+    expect(findHunkByStableId(hunks, secondId)).toBe(second)
+  })
+
+  it("does not resolve an old duplicate ID to the remaining hunk", () => {
+    const lines = [" ctx", "-old", "+new"]
+    const first = createHunk(1, "src/main.ts", 0, 10, 10, lines)
+    const second = createHunk(2, "src/main.ts", 1, 80, 80, lines)
+    const firstId = hunkToStableId(first, [first, second])
+
+    expect(findHunkByStableId([second], firstId)).toBeUndefined()
+  })
+
+  it("does not treat the @@ line numbers as part of the ID", () => {
+    const hunk = createHunk(1, "src/main.ts", 0, 10, 10, [
+      " ctx",
+      "-old",
+      "+new",
+    ])
+    const id = hunkToStableId(hunk, [hunk])
+
+    expect(id).not.toContain("-10")
+    expect(id).not.toContain("+10")
+    expect(parseHunkId(id)).not.toBeNull()
   })
 })
